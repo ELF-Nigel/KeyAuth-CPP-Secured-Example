@@ -38,6 +38,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #pragma comment(lib, "bcrypt.lib")
@@ -62,9 +63,35 @@ enum class BufferMode : uint16_t {
     VirtualGuarded = 2
 };
 
+enum class Status : uint32_t {
+    Ok = 0,
+    InvalidArgument,
+    PolicyViolation,
+    RegionViolation,
+    DecryptFailed,
+    BufferTooSmall,
+    NotSupported,
+    StorageError
+};
+
+inline const char* status_message(Status s) {
+    switch (s) {
+        case Status::Ok: return "Ok";
+        case Status::InvalidArgument: return "InvalidArgument";
+        case Status::PolicyViolation: return "PolicyViolation";
+        case Status::RegionViolation: return "RegionViolation";
+        case Status::DecryptFailed: return "DecryptFailed";
+        case Status::BufferTooSmall: return "BufferTooSmall";
+        case Status::NotSupported: return "NotSupported";
+        case Status::StorageError: return "StorageError";
+        default: return "Unknown";
+    }
+}
+
 struct DecryptOptions {
     BufferMode buffer = BufferMode::VirtualLocked;
     bool require_aad = false;
+    bool zero_on_failure = true;
 };
 
 
@@ -86,6 +113,40 @@ inline void set_policy(const Policy& policy) {
     default_policy() = policy;
 }
 
+inline Policy hardened_policy() {
+    Policy p{};
+    p.require_aad = true;
+    p.require_algorithm = true;
+    p.required_algorithm = Algorithm::Aes256Gcm;
+    p.require_binding = true;
+    p.required_binding = RuntimeBinding::Process;
+    p.min_key_id = 1;
+    return p;
+}
+
+inline DecryptOptions hardened_decrypt_options() {
+    DecryptOptions o{};
+    o.buffer = BufferMode::VirtualGuarded;
+    o.require_aad = true;
+    return o;
+}
+
+struct StrictMode {
+    bool enabled = false;
+    bool require_aad = true;
+    bool require_binding = true;
+    Algorithm require_algorithm = Algorithm::Aes256Gcm;
+};
+
+inline StrictMode& strict_mode() {
+    static StrictMode s{};
+    return s;
+}
+
+inline void set_strict_mode(const StrictMode& s) {
+    strict_mode() = s;
+}
+
 struct RegionPolicy {
     bool enable = false;
     std::vector<std::string> allowlist;
@@ -101,6 +162,95 @@ inline RegionPolicy& region_policy() {
 
 inline void set_region_policy(const RegionPolicy& p) {
     region_policy() = p;
+}
+
+inline std::vector<uint8_t> encrypt_blob_dpapi(const std::vector<uint8_t>& plain, bool local_machine = false) {
+    DATA_BLOB input{};
+    input.pbData = const_cast<BYTE*>(plain.data());
+    input.cbData = static_cast<DWORD>(plain.size());
+
+    DATA_BLOB output{};
+    DWORD flags = local_machine ? CRYPTPROTECT_LOCAL_MACHINE : 0;
+
+    if (!CryptProtectData(&input, L"NigelCryptBlob", nullptr, nullptr, nullptr, flags, &output)) {
+        throw std::runtime_error("CryptProtectData failed");
+    }
+
+    std::vector<uint8_t> out(output.pbData, output.pbData + output.cbData);
+    LocalFree(output.pbData);
+    return out;
+}
+
+inline std::vector<uint8_t> decrypt_blob_dpapi(const std::vector<uint8_t>& blob) {
+    DATA_BLOB input{};
+    input.pbData = const_cast<BYTE*>(blob.data());
+    input.cbData = static_cast<DWORD>(blob.size());
+
+    DATA_BLOB output{};
+    if (!CryptUnprotectData(&input, nullptr, nullptr, nullptr, nullptr, 0, &output)) {
+        throw std::runtime_error("CryptUnprotectData failed");
+    }
+
+    std::vector<uint8_t> out(output.pbData, output.pbData + output.cbData);
+    LocalFree(output.pbData);
+    return out;
+}
+
+struct AuditInfo {
+    uint16_t version = 0;
+    Algorithm algorithm = Algorithm::Aes256Gcm;
+    RuntimeBinding binding = RuntimeBinding::None;
+    uint32_t key_id = 0;
+    uint32_t ciphertext_len = 0;
+    uint16_t custom_meta_len = 0;
+};
+
+namespace detail {
+uint16_t read_u16(const std::vector<uint8_t>& in, size_t& off);
+uint32_t read_u32(const std::vector<uint8_t>& in, size_t& off);
+} // namespace detail
+
+inline AuditInfo audit_envelope(const std::vector<uint8_t>& data) {
+    if (data.size() < 4 + 2 + 2 + 4 + 4) {
+        throw std::runtime_error("Envelope too small");
+    }
+    size_t off = 0;
+    const uint32_t magic = detail::read_u32(data, off);
+    const uint16_t version = detail::read_u16(data, off);
+    if (magic != 0x5243474E || version == 0) {
+        throw std::runtime_error("Invalid envelope header");
+    }
+    uint16_t alg = 0;
+    uint16_t binding = 0;
+    uint32_t key_id = 0;
+    uint32_t ciphertext_len = 0;
+    uint16_t meta_len = 0;
+
+    if (version == 1) {
+        alg = detail::read_u16(data, off);
+        key_id = detail::read_u32(data, off);
+        ciphertext_len = detail::read_u32(data, off);
+    } else if (version == 2) {
+        alg = detail::read_u16(data, off);
+        binding = detail::read_u16(data, off);
+        key_id = detail::read_u32(data, off);
+        ciphertext_len = detail::read_u32(data, off);
+    } else {
+        alg = detail::read_u16(data, off);
+        binding = detail::read_u16(data, off);
+        key_id = detail::read_u32(data, off);
+        ciphertext_len = detail::read_u32(data, off);
+        meta_len = detail::read_u16(data, off);
+    }
+
+    AuditInfo info{};
+    info.version = version;
+    info.algorithm = static_cast<Algorithm>(alg);
+    info.binding = static_cast<RuntimeBinding>(binding);
+    info.key_id = key_id;
+    info.ciphertext_len = ciphertext_len;
+    info.custom_meta_len = meta_len;
+    return info;
 }
 
 namespace detail {
@@ -973,6 +1123,24 @@ public:
         detail::free_buffer(buf_);
     }
 
+    // Set buffer pages to PAGE_NOACCESS (only works for virtual buffers).
+    void protect() {
+        if (buf_.mode == BufferMode::Heap || !buf_.base || buf_.alloc == 0) {
+            return;
+        }
+        DWORD oldp = 0;
+        ::VirtualProtect(buf_.base, buf_.alloc, PAGE_NOACCESS, &oldp);
+    }
+
+    // Restore buffer pages to PAGE_READWRITE.
+    void unprotect() {
+        if (buf_.mode == BufferMode::Heap || !buf_.base || buf_.alloc == 0) {
+            return;
+        }
+        DWORD oldp = 0;
+        ::VirtualProtect(buf_.base, buf_.alloc, PAGE_READWRITE, &oldp);
+    }
+
     void wipe_now() {
         reset();
     }
@@ -1061,6 +1229,18 @@ public:
         }
         if (pol.min_key_id && key_id_ < pol.min_key_id) {
             throw std::runtime_error("Key id does not satisfy policy");
+        }
+        const StrictMode& sm = strict_mode();
+        if (sm.enabled) {
+            if (sm.require_aad && aad.empty()) {
+                throw std::runtime_error("Strict mode: AAD required");
+            }
+            if (sm.require_binding && binding_ != RuntimeBinding::Process) {
+                throw std::runtime_error("Strict mode: process binding required");
+            }
+            if (algorithm_ != sm.require_algorithm) {
+                throw std::runtime_error("Strict mode: algorithm required");
+            }
         }
         if (rp.enable) {
             if (!rp.resolver) {
@@ -1164,6 +1344,7 @@ public:
     }
 
 
+
     void rekey(
         std::string_view aad = {},
         Algorithm alg = Algorithm::Aes256Gcm,
@@ -1174,6 +1355,82 @@ public:
             throw std::runtime_error("No key provider configured");
         }
         rekey(provider, aad, alg, binding);
+    }
+
+
+    size_t decrypt_to(
+        char* out,
+        size_t out_len,
+        std::string_view aad = {},
+        const DecryptOptions& options = DecryptOptions{}
+    ) const {
+        if (!out || out_len == 0) {
+            throw std::invalid_argument("Output buffer is null or empty");
+        }
+
+        SecureStringView v;
+        try {
+            v = decrypt(aad, options);
+        } catch (...) {
+            if (options.zero_on_failure) {
+                detail::secure_zero(out, out_len);
+            }
+            throw;
+        }
+
+        if (v.size() + 1 > out_len) {
+            if (options.zero_on_failure) {
+                detail::secure_zero(out, out_len);
+            }
+            throw std::runtime_error("Output buffer too small");
+        }
+
+        if (v.size()) {
+            std::memcpy(out, v.c_str(), v.size());
+        }
+        out[v.size()] = '\0';
+        return v.size();
+    }
+
+
+    Status decrypt_to(
+        char* out,
+        size_t out_len,
+        std::string_view aad,
+        const DecryptOptions& options,
+        size_t* out_written
+    ) const {
+        if (!out || out_len == 0) {
+            return Status::InvalidArgument;
+        }
+        try {
+            SecureStringView v = decrypt(aad, options);
+            if (v.size() + 1 > out_len) {
+                if (options.zero_on_failure) {
+                    detail::secure_zero(out, out_len);
+                }
+                return Status::BufferTooSmall;
+            }
+            if (v.size()) {
+                std::memcpy(out, v.c_str(), v.size());
+            }
+            out[v.size()] = '\0';
+            if (out_written) {
+                *out_written = v.size();
+            }
+            return Status::Ok;
+        } catch (const std::runtime_error& e) {
+            (void)e;
+            if (options.zero_on_failure) {
+                detail::secure_zero(out, out_len);
+            }
+            return Status::DecryptFailed;
+        } catch (...) {
+            if (options.zero_on_failure) {
+                detail::secure_zero(out, out_len);
+            }
+            return Status::DecryptFailed;
+        }
     }
 
     void rekey(
@@ -1196,6 +1453,19 @@ public:
 
     const std::vector<uint8_t>& custom_meta() const {
         return custom_meta_;
+    }
+
+
+    bool auto_rekey(std::string_view aad = {}) {
+        auto provider = detail::default_key_ring().primary();
+        if (!provider) {
+            throw std::runtime_error("No key provider configured");
+        }
+        if (key_id_ == provider->key_id()) {
+            return false;
+        }
+        rekey(provider, aad, algorithm_, binding_);
+        return true;
     }
 
     std::vector<uint8_t> export_envelope() const {
@@ -1377,6 +1647,87 @@ public:
         }
     }
 
+    void encrypt_with_provider(
+        std::string_view plain,
+        std::string_view aad,
+        Algorithm alg,
+        RuntimeBinding binding,
+        const std::shared_ptr<KeyProvider>& provider
+    ) {
+        if (!provider) {
+            throw std::invalid_argument("KeyProvider cannot be null");
+        }
+
+        clear();
+        version_ = 3;
+        algorithm_ = alg;
+        binding_ = binding;
+        key_id_ = provider->key_id();
+
+        detail::gen_random(salt_.data(), salt_.size());
+        detail::gen_random(nonce_.data(), nonce_.size());
+        detail::gen_random(context_.data(), context_.size());
+
+        detail::KeyBlob master = provider->get_master_key();
+        std::vector<uint8_t> ikm(master.bytes.begin(), master.bytes.end());
+        std::vector<uint8_t> salt(salt_.begin(), salt_.end());
+
+        std::vector<uint8_t> info;
+        info.reserve(nonce_.size() + context_.size() + 32 + 32);
+        info.insert(info.end(), nonce_.begin(), nonce_.end());
+        info.insert(info.end(), context_.begin(), context_.end());
+
+        std::vector<uint8_t> aad_hash;
+        if (!aad.empty()) {
+            aad_hash = detail::sha256(std::vector<uint8_t>(aad.begin(), aad.end()));
+            info.insert(info.end(), aad_hash.begin(), aad_hash.end());
+        }
+
+        std::vector<uint8_t> binding_bytes = detail::runtime_binding_bytes(binding_);
+        if (!binding_bytes.empty()) {
+            info.insert(info.end(), binding_bytes.begin(), binding_bytes.end());
+        }
+
+        std::vector<uint8_t> key = detail::hkdf_sha256(std::move(ikm), std::move(salt), std::move(info), 32);
+
+        std::vector<uint8_t> auth_data;
+        auth_data.reserve(aad.size() + binding_bytes.size());
+        auth_data.insert(auth_data.end(), aad.begin(), aad.end());
+        auth_data.insert(auth_data.end(), binding_bytes.begin(), binding_bytes.end());
+
+        if (plain.empty()) {
+            ciphertext_.clear();
+            tag_.fill(0);
+            detail::secure_zero(key.data(), key.size());
+            return;
+        }
+
+        if (algorithm_ == Algorithm::Aes256Gcm) {
+            detail::aes256_gcm_encrypt(
+                key.data(), key.size(),
+                reinterpret_cast<const uint8_t*>(plain.data()), plain.size(),
+                nonce_.data(), nonce_.size(),
+                auth_data.empty() ? nullptr : auth_data.data(), auth_data.size(),
+                ciphertext_,
+                tag_
+            );
+        } else if (algorithm_ == Algorithm::ChaCha20Poly1305) {
+            detail::chacha20_poly1305_encrypt(
+                key.data(), key.size(),
+                reinterpret_cast<const uint8_t*>(plain.data()), plain.size(),
+                nonce_.data(), nonce_.size(),
+                auth_data.empty() ? nullptr : auth_data.data(), auth_data.size(),
+                ciphertext_,
+                tag_
+            );
+        } else {
+            detail::secure_zero(key.data(), key.size());
+            throw std::runtime_error("Unsupported algorithm");
+        }
+
+        detail::secure_zero(key.data(), key.size());
+    }
+
 private:
     uint16_t version_ = 1;
     Algorithm algorithm_ = Algorithm::Aes256Gcm;
@@ -1387,6 +1738,7 @@ private:
     std::array<uint8_t, 16> tag_{};   // 128-bit tag
     std::array<uint8_t, 16> salt_{};  // per-string salt for HKDF
     std::array<uint8_t, 16> context_{}; // per-string HKDF context
+    std::vector<uint8_t> custom_meta_{};
 };
 
 } // namespace nigelcrypt
