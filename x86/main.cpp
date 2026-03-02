@@ -14,9 +14,23 @@ using namespace KeyAuth;
 
 namespace {
 
-constexpr WinSecRuntime::Mode kSecurityMode = WinSecRuntime::Mode::Paranoid;
+constexpr WinSecRuntime::Mode kSecurityMode = WinSecRuntime::Mode::Aggressive;
 constexpr bool kRunPeriodicChecks = true;
-constexpr DWORD kPeriodicCheckMs = 15000;
+constexpr DWORD kPeriodicCheckMs = 20000;
+
+constexpr bool kEnableSafeDllSearch = true;
+constexpr bool kEnableDisallowUnc = true;
+constexpr bool kEnableDisallowMotw = true;
+constexpr bool kEnableIatWritableCheck = true;
+constexpr bool kEnableIatBoundsCheck = true;
+constexpr bool kEnableIatRequireExecutable = true;
+constexpr bool kEnableIatDisallowSelf = true;
+constexpr bool kEnableIatWriteProtect = false;
+constexpr bool kEnableVmHeuristics = false;
+constexpr int kVmMinCores = 0;
+constexpr int kVmMinRamGb = 0;
+constexpr uint32_t kNopSledThreshold = 0;
+constexpr uint32_t kInt3SledThreshold = 0;
 
 std::string tm_to_readable_time(std::tm ctx);
 std::string remaining_until(const std::string& timestamp);
@@ -52,13 +66,13 @@ secure::runtime::Config build_security_config() {
     cfg.expected_integrity_rid = 0;
     cfg.cmdline_hash_baseline = 0;
     cfg.cwd_hash_baseline = 0;
-    cfg.disallow_unc = true;
-    cfg.disallow_motw = true;
+    cfg.disallow_unc = kEnableDisallowUnc;
+    cfg.disallow_motw = kEnableDisallowMotw;
     cfg.cwd_allowlist_hashes = nullptr;
     cfg.cwd_allowlist_count = 0;
     cfg.image_path_allowlist_hashes = nullptr;
     cfg.image_path_allowlist_count = 0;
-    cfg.enforce_safe_dll_search = true;
+    cfg.enforce_safe_dll_search = kEnableSafeDllSearch;
     cfg.known_dll_hashes = nullptr;
     cfg.known_dll_count = 0;
 
@@ -89,8 +103,8 @@ secure::runtime::Config build_security_config() {
 
     cfg.vm_vendor_hashes = nullptr;
     cfg.vm_vendor_hash_count = 0;
-    cfg.vm_min_cores = 2;
-    cfg.vm_min_ram_gb = 2;
+    cfg.vm_min_cores = kEnableVmHeuristics ? kVmMinCores : 0;
+    cfg.vm_min_ram_gb = kEnableVmHeuristics ? kVmMinRamGb : 0;
 
     cfg.iat_baseline = 0;
     cfg.import_name_hash_baseline = 0;
@@ -98,14 +112,14 @@ secure::runtime::Config build_security_config() {
     cfg.import_module_count_baseline = 0;
     cfg.import_func_count_baseline = 0;
 
-    cfg.iat_write_protect = true;
-    cfg.iat_writable_check = true;
+    cfg.iat_write_protect = kEnableIatWriteProtect;
+    cfg.iat_writable_check = kEnableIatWritableCheck;
     cfg.iat_count_baseline = 0;
     cfg.iat_mirror = nullptr;
     cfg.iat_mirror_count = 0;
-    cfg.iat_bounds_check = true;
-    cfg.iat_require_executable = true;
-    cfg.iat_disallow_self = true;
+    cfg.iat_bounds_check = kEnableIatBoundsCheck;
+    cfg.iat_require_executable = kEnableIatRequireExecutable;
+    cfg.iat_disallow_self = kEnableIatDisallowSelf;
 
     cfg.text_sha256_baseline = {};
     cfg.text_rolling_crc_baseline = 0;
@@ -120,8 +134,8 @@ secure::runtime::Config build_security_config() {
     cfg.text_chunk_count = 32;
     cfg.text_chunk_baseline = 0;
 
-    cfg.nop_sled_threshold = 8;
-    cfg.int3_sled_threshold = 8;
+    cfg.nop_sled_threshold = kNopSledThreshold;
+    cfg.int3_sled_threshold = kInt3SledThreshold;
 
     cfg.delay_import_name_hash_baseline = 0;
 

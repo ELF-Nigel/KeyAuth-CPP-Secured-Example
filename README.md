@@ -1,433 +1,200 @@
-# KeyAuth-CPP-Example : Please star 🌟
+# KeyAuth‑CPP Secured Example
 
-KeyAuth C++ example SDK for https://keyauth.cc license key API auth.
+This repository is a hardened KeyAuth C++ example that integrates **WinSecRuntime** and **NigelCrypt** for runtime security and sensitive string protection.
 
-This example uses a C++ static library found here https://github.com/KeyAuth/keyauth-cpp-library
+It is designed to be:
+- easy to compile
+- safe for legit users
+- configurable for higher security without changing your API
 
-### Tutorial Video
+---
 
-This video explains both how to use this example, but also how to add KeyAuth to your <ins>**OWN PROJECT**</ins> https://www.youtube.com/watch?v=GEXpZo3sce0
+## Quick Start
 
-## **Bugs**
+1. open `x64/main.cpp` (or `x86/main.cpp`)  
+2. replace the app config strings:
+   - `name`
+   - `ownerid`
+   - `version`
+   - `url`
+   - `path`
+3. build the solution in Visual Studio (`Release | x64` or `Release | x86`)
 
-If you are using our example with no significant changes, and you are having problems, please Report Bug here https://keyauth.cc/app/?page=forms
+---
 
-However, we do **NOT** provide support for adding KeyAuth to your project. If you can't figure this out you should use Google or YouTube to learn more about the programming language you want to sell a program in.
+## Build & Run
 
-## **Security practices**
+### x64
+```
+x64/example.sln
+```
+Build `Release | x64`.
 
-* Utilize obfuscation provided by companies such as VMProtect or Themida (utilize their SDKs too for greater protection)
-* Preform frequent integrity checks to ensure the memory of the program has not been modified
-* Don't write the bytes of a file you've downloaded to disk if you don't want that file to be retrieved by the user. Rather, execute the file in memory and erase it from memory the moment execution finishes
+### x86
+```
+x86/example.sln
+```
+Build `Release | x86`.
 
-While our API ensures licenses validation, it's crucial to implement robust client-side protection like obfuscation and integrity checks to prevent software tampering, as vulnerabilities often stem from insufficient client security.
+---
 
-## **Secured example security**
+## What’s Secured
 
-This secured example ships with:
-- **WinSecRuntime**: runtime integrity checks and anti‑tamper signals
-- **NigelCrypt**: runtime string protection for sensitive literals
+This example includes:
+- **WinSecRuntime** runtime integrity checks
+- **NigelCrypt** runtime string protection
+- **KeyAuth** client validation + session guarding
 
-### **WinSecRuntime setup**
+---
 
-The example calls `run_runtime_security()` at startup (see `x64/main.cpp` and `x86/main.cpp`). It builds a `secure::runtime::Config cfg` and passes it into `WinSecRuntime::Initialize()` and `WinSecRuntime::RunAll()`.
+## WinSecRuntime (Runtime Security)
 
-By default the config values are set to the library defaults (all baselines `0`, allowlists `nullptr`, toggles `false`). This makes the checks **available** but **not enforced** until you set baselines or enable flags.
+WinSecRuntime is integrated in both `x64/main.cpp` and `x86/main.cpp`.
 
-#### Enable or tune checks
+### Core flow
+```
+WinSecRuntime::Initialize(...)
+WinSecRuntime::StartIntegrityEngine(...)
+WinSecRuntime::EnableAntiDebug(...)
+WinSecRuntime::EnableHookGuard(...)
+WinSecRuntime::RunAll(...)
+```
 
-Open `x64/main.cpp` (or `x86/main.cpp`) and edit the config block inside `run_runtime_security()`:
+If checks fail, the program exits early.
 
-- `kSecurityMode` controls global behavior (`Minimal`, `Moderate`, `Aggressive`, `Paranoid`)
-- `kRunPeriodicChecks` enables periodic `RunAll()` in a background thread
-- `kPeriodicCheckMs` controls the interval
-- `build_security_config()` is where all WinSecRuntime toggles and baselines live
+### Tunable Security Controls
 
-- `cfg.enforce_safe_dll_search = true;` enables safe DLL search enforcement
-- `cfg.disallow_unc = true;` blocks UNC execution
-- `cfg.disallow_motw = true;` blocks Mark‑of‑the‑Web files
-- `cfg.module_hashes` / `cfg.module_hash_count` lets you pin known module hashes
-- `cfg.iat_*` lets you harden the import table checks
-- `cfg.text_*` enables code section integrity checks (sha256/rolling crc/chunk)
-- `cfg.nop_sled_threshold` / `cfg.int3_sled_threshold` enables sled detection
-- `cfg.vm_min_cores` / `cfg.vm_min_ram_gb` can reduce VM abuse
+These are defined near the top of each `main.cpp`:
 
-If you want the checks to **block on failure**, keep:
-```cpp
+```
+constexpr WinSecRuntime::Mode kSecurityMode = WinSecRuntime::Mode::Aggressive;
+constexpr bool kRunPeriodicChecks = true;
+constexpr DWORD kPeriodicCheckMs = 20000;
+
+constexpr bool kEnableSafeDllSearch = true;
+constexpr bool kEnableDisallowUnc = true;
+constexpr bool kEnableDisallowMotw = true;
+constexpr bool kEnableIatWritableCheck = true;
+constexpr bool kEnableIatBoundsCheck = true;
+constexpr bool kEnableIatRequireExecutable = true;
+constexpr bool kEnableIatDisallowSelf = true;
+constexpr bool kEnableIatWriteProtect = false;
+constexpr bool kEnableVmHeuristics = false;
+constexpr int kVmMinCores = 0;
+constexpr int kVmMinRamGb = 0;
+constexpr uint32_t kNopSledThreshold = 0;
+constexpr uint32_t kInt3SledThreshold = 0;
+```
+
+#### Recommended meanings
+- **Aggressive** is balanced (good protection, low false positives).
+- **Paranoid** can block legit users, use only if you set baselines.
+- IAT write‑protect is off by default to avoid linker/runtime conflicts.
+- VM heuristics are off by default to avoid blocking dev VM users.
+
+### Full Config Block
+
+The full `secure::runtime::Config` is built in:
+```
+build_security_config()
+```
+
+This is where you can set:
+- module hashes
+- IAT baselines
+- text section baselines
+- parent/chain checks
+- prologue/inline‑hook checks
+
+If you want all checks enforced, keep this logic:
+```
 const auto report = WinSecRuntime::RunAll(policy);
 return report.ok();
 ```
-and return `false` on failure (the example exits early when `run_runtime_security()` fails).
 
-### **NigelCrypt string protection**
+---
 
-The example replaces UI/status strings and app config strings with NigelCrypt.  
-See `nc()` and `nigel_string()` helpers in `x64/main.cpp` and `x86/main.cpp`.
+## NigelCrypt (String Protection)
 
-#### How to change or add protected strings
+This example protects user‑visible strings and app config values using NigelCrypt.
 
-```cpp
-std::string value = nc("My Text", "aad:label");
+### Usage
+```
+std::string value = nc("text", "aad:label");
 ```
 
-- the first argument is the plaintext string
-- the second argument is an AAD tag (any stable label you want)
+### Notes
+- NigelCrypt protects **runtime storage**, not compile‑time literals.
+- If you need to remove plaintext literals from the binary, use the NigelCrypt packer and embed ciphertext.
 
-If you want to remove encryption for a string, replace `nc(...)` with a normal literal.
+---
 
-#### Important note about literals
+## KeyAuth Integration
 
-NigelCrypt protects runtime storage. If you pass a literal directly, it still exists in the binary. For complete removal of plaintext literals, use the NigelCrypt packer to embed encrypted blobs.
-
-## Copyright License
-
-KeyAuth is licensed under **Elastic License 2.0**
-
-* You may not provide the software to third parties as a hosted or managed
-service, where the service provides users with access to any substantial set of
-the features or functionality of the software.
-
-* You may not move, change, disable, or circumvent the license key functionality
-in the software, and you may not remove or obscure any functionality in the
-software that is protected by the license key.
-
-* You may not alter, remove, or obscure any licensing, copyright, or other notices
-of the licensor in the software. Any use of the licensor’s trademarks is subject
-to applicable law.
-
-Thank you for your compliance, we work hard on the development of KeyAuth and do not appreciate our copyright being infringed.
-
-## **What is KeyAuth?**
-
-KeyAuth is a powerful cloud-based authentication system designed to protect your software from piracy and unauthorized access. With KeyAuth, you can implement secure licensing, user management, and subscription systems in minutes. Client SDKs available for [C#](https://github.com/KeyAuth/KeyAuth-CSHARP-Example), [C++](https://github.com/KeyAuth/KeyAuth-CPP-Example), [Python](https://github.com/KeyAuth/KeyAuth-Python-Example), [Java](https://github.com/KeyAuth-Archive/KeyAuth-JAVA-api), [JavaScript](https://github.com/mazkdevf/KeyAuth-JS-Example), [VB.NET](https://github.com/KeyAuth/KeyAuth-VB-Example), [PHP](https://github.com/KeyAuth/KeyAuth-PHP-Example), [Rust](https://github.com/KeyAuth/KeyAuth-Rust-Example), [Go](https://github.com/mazkdevf/KeyAuth-Go-Example), [Lua](https://github.com/mazkdevf/KeyAuth-Lua-Examples), [Ruby](https://github.com/mazkdevf/KeyAuth-Ruby-Example), and [Perl](https://github.com/mazkdevf/KeyAuth-Perl-Example). KeyAuth has several unique features such as memory streaming, webhook function where you can send requests to API without leaking the API, discord webhook notifications, ban the user securely through the application at your discretion. Feel free to join https://t.me/keyauth if you have questions or suggestions.
-
-> [!TIP]
-> https://vaultcord.com FREE Discord bot to Backup server, members, channels, messages & more. Custom verify page, block alt accounts, VPNs & more.
-
-## **Customer connection issues?**
-
-This is common amongst all authentication systems. Program obfuscation causes false positives in virus scanners, and with the scale of KeyAuth this is perceived as a malicious domain. So, `keyauth.com` and `keyauth.win` have been blocked by many internet providers. for dashbord, reseller panel, customer panel, use `keyauth.cc`
-
-For API, `keyauth.cc` will not work because I purposefully blocked it on there so `keyauth.cc` doesn't get blocked also. So, you should create your own domain and follow this tutorial video https://www.youtube.com/watch?v=a2SROFJ0eYc. The tutorial video shows you how to create a domain name for 100% free if you don't want to purchase one.
-
-## **`KeyAuthApp` instance definition**
-
-Visit https://keyauth.cc/app/ and select your application, then click on the **C++** tab
-
-It'll provide you with the code which you should replace with in the [`main.cpp`](https://github.com/KeyAuth/KeyAuth-CPP-Example/blob/8f3215d5259c42f25854476c49ee443d67af639a/main.cpp#L14-L17) file
-
-```cpp
-std::string name = "example"; // application name. right above the blurred text aka the secret on the licenses tab among other tabs
-std::string ownerid = "JjPMBVlIOd"; // ownerid, found in account settings. click your profile picture on top right of dashboard and then account settings.
-std::string secret = "db40d586f4b189e04e5c18c3c94b7e72221be3f6551995adc05236948d1762bc"; // app secret, the blurred text on licenses tab and other tabs
-std::string version = "1.0"; // leave alone unless you've changed version on website
-std::string url = "https://keyauth.win/api/1.2/"; // change if you're self-hosting
-
-api KeyAuthApp(name, ownerid, secret, version, url);
+### App config
+Replace these values in `x64/main.cpp` / `x86/main.cpp`:
+```
+name
+ownerid
+version
+url
+path
 ```
 
-## **Initialize application**
-
-You must call this function prior to using any other KeyAuth function. Otherwise the other KeyAuth function won't work.
-
-```cpp
-KeyAuthApp.init();
-if (!KeyAuthApp.response.success)
-{
-	std::cout << skCrypt("\n Status: ") << KeyAuthApp.response.message;
-	Sleep(1500);
-	exit(0);
-}
+### Basic flow
+```
+KeyAuthApp.init()
+KeyAuthApp.login()
+KeyAuthApp.regstr()
+KeyAuthApp.license()
+KeyAuthApp.check()
 ```
 
-## **Display application information**
+### Session guard
+This example runs:
+- `checkAuthenticated()` in a background thread
+- `sessionStatus()` periodic check
 
-```cpp
-KeyAuthApp.fetchstats();
-std::cout << skCrypt("\n\n Number of users: ") << KeyAuthApp.app_data.numUsers;
-std::cout << skCrypt("\n Number of online users: ") << KeyAuthApp.app_data.numOnlineUsers;
-std::cout << skCrypt("\n Number of keys: ") << KeyAuthApp.app_data.numKeys;
-std::cout << skCrypt("\n Application Version: ") << KeyAuthApp.app_data.version;
-std::cout << skCrypt("\n Customer panel link: ") << KeyAuthApp.app_data.customerPanelLink;
+Do not remove those unless you fully replace them with your own protections.
+
+---
+
+## Troubleshooting
+
+### GitHub “permission denied (publickey)”
+Use this push command:
+```
+GIT_SSH_COMMAND='ssh -i /home/admin/.ssh/keyauth_cpp_secured_example -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new' git push
 ```
 
-## **Check session validation**
+### Build errors
+Make sure you build the correct configuration:
+- Release | x64 for `x64/example.sln`
+- Release | x86 for `x86/example.sln`
 
-Use this to see if the user is logged in or not.
+---
 
-```cpp
-std::cout << skCrypt("\n Checking session validation status (remove this if causing your loader to be slow)");
-KeyAuthApp.check();
-std::cout << skCrypt("\n Current Session Validation Status: ") << KeyAuthApp.response.message;
-```
+## FAQ
 
-## **Check blacklist status**
+**Does this break API compatibility?**  
+No. All changes are client‑side only.
 
-Check if HWID or IP Address is blacklisted. You can add this if you want, just to make sure nobody can open your program for less than a second if they're blacklisted. Though, if you don't mind a blacklisted user having the program for a few seconds until they try to login and register, and you care about having the quickest program for your users, you shouldn't use this function then. If a blacklisted user tries to login/register, the KeyAuth server will check if they're blacklisted and deny entry if so. So the check blacklist function is just auxiliary function that's optional.
+**Will this block legit users?**  
+Balanced settings are chosen by default. If you enable strict checks (e.g., IAT write‑protect, VM heuristics) you may see false positives.
 
-```cpp
-if (KeyAuthApp.checkblack()) {
-	abort();
-}
-```
+**Can I turn off security?**  
+Yes. Set `kSecurityMode` to `Minimal` and disable the toggles.
 
-## **Login with username/password**
+---
 
-```cpp
-std::string username;
-std::string password;
-std::cout << skCrypt("\n\n Enter username: ");
-std::cin >> username;
-std::cout << skCrypt("\n Enter password: ");
-std::cin >> password;
-KeyAuthApp.login(username, password);
-if (!KeyAuthApp.response.success)
-{
-	std::cout << skCrypt("\n Status: ") << KeyAuthApp.response.message;
-	Sleep(1500);
-	exit(0);
-}
-```
+## Links
 
-## **Register with username/password/key**
+- KeyAuth App: https://keyauth.cc/app/
+- C++ Example (base): https://github.com/KeyAuth/KeyAuth-CPP-Example
 
-```cpp
-std::string username;
-std::string password;
-std::string key;
-std::cout << skCrypt("\n\n Enter username: ");
-std::cin >> username;
-std::cout << skCrypt("\n Enter password: ");
-std::cin >> password;
-std::cout << skCrypt("\n Enter license: ");
-std::cin >> key;
-KeyAuthApp.regstr(username, password, key);
-if (!KeyAuthApp.response.success)
-{
-	std::cout << skCrypt("\n Status: ") << KeyAuthApp.response.message;
-	Sleep(1500);
-	exit(0);
-}
-```
+---
 
-## **Upgrade user username/key**
+## License
 
-Used so the user can add extra time to their account by claiming new key.
-
-> [!WARNING]  
-> No password is needed to upgrade account. So, unlike login, register, and license functions - you should **not** log user in after successful upgrade.
-
-
-```cpp
-std::string username;
-std::string key;
-std::cout << skCrypt("\n\n Enter username: ");
-std::cin >> username;
-std::cout << skCrypt("\n Enter license: ");
-std::cin >> key;
-KeyAuthApp.upgrade(username, key);
-```
-
-## **Login with just license key**
-
-Users can use this function if their license key has never been used before, and if it has been used before. So if you plan to just allow users to use keys, you can remove the login and register functions from your code.
-
-```cpp
-std::string key;
-std::cout << skCrypt("\n Enter license: ");
-std::cin >> key;
-KeyAuthApp.license(key);
-if (!KeyAuthApp.response.success)
-{
-	std::cout << skCrypt("\n Status: ") << KeyAuthApp.response.message;
-	Sleep(1500);
-	exit(0);
-}
-```
-
-## **Login with web loader**
-
-Have your users login through website. Tutorial video here https://www.youtube.com/watch?v=9-qgmsUUCK4 you can use your own domain for customer panel also, https://www.youtube.com/watch?v=iHQe4GLvgaE
-
-```cpp
-std::cout << "\n Waiting for user to login";
-KeyAuthApp.web_login();
-std::cout << "\n Waiting for button to be clicked";
-KeyAuthApp.button("close");
-```
-
-## **User Data**
-
-Show information for current logged-in user.
-
-```cpp
-std::cout << skCrypt("\n User data:");
-std::cout << skCrypt("\n Username: ") << KeyAuthApp.response.username;
-std::cout << skCrypt("\n IP address: ") << KeyAuthApp.user_data.ip;
-std::cout << skCrypt("\n Hardware-Id: ") << KeyAuthApp.user_data.hwid;
-std::cout << skCrypt("\n Create date: ") << tm_to_readable_time(timet_to_tm(string_to_timet(KeyAuthApp.user_data.createdate)));
-std::cout << skCrypt("\n Last login: ") << tm_to_readable_time(timet_to_tm(string_to_timet(KeyAuthApp.user_data.lastlogin)));
-std::cout << skCrypt("\n Subscription name(s): ");
-std::string subs;
-for (std::string value : KeyAuthApp.user_data.subscriptions)subs += value + " ";
-std::cout << subs;
-std::cout << skCrypt("\n Subscription expiry: ") << tm_to_readable_time(timet_to_tm(string_to_timet(KeyAuthApp.user_data.expiry)));
-```
-
-## **Check subscription name of user**
-
-If you want to wall off parts of your app to only certain users, you can have multiple subscriptions with different names. Then, when you create licenses that correspond to the level of that subscription, users who use those licenses will get a subscription with the name of the subscription that corresponds to the level of the license key they used.
-
-```cpp
-for (std::string subs : KeyAuthApp.user_data.subscriptions)
-{
-	if (subs == "default")
-	{
-		std::cout << skCrypt("\n User has subscription with name: default");
-	}
-}
-```
-
-## **Application variables**
-
-A string that is kept on the server-side of KeyAuth. On the dashboard you can choose for each variable to be authenticated (only logged in users can access), or not authenticated (any user can access before login). These are global and static for all users, unlike User Variables which will be dicussed below this section.
-
-```cpp
-// get data from global variable with name 'status'
-std::cout << "\n status - " + KeyAuthApp.var("status");
-```
-
-## **User Variables**
-
-User variables are strings kept on the server-side of KeyAuth. They are specific to users. They can be set on Dashboard in the Users tab, via SellerAPI, or via your loader using the code below. `discord` is the user variable name you fetch the user variable by. `test#0001` is the variable data you get when fetching the user variable.
-
-```cpp
-std::cout << "\n user variable - " + KeyAuthApp.getvar("discord"); // get value of the user variable 'discord'
-```
-
-And here's how you fetch the user variable:
-
-```cpp
-KeyAuthApp.setvar("discord", "test#0001"); // set the value of user variable 'discord' to 'test#0001'
-```
-
-## **Application Logs**
-
-Can be used to log data. Good for anti-debug alerts and maybe error debugging. If you set Discord webhook in the app settings of the Dashboard, it will send log messages to your Discord webhook rather than store them on site. It's recommended that you set Discord webhook, as logs on site are deleted 1 month after being sent.
-
-You can use the log function before login & after login.
-
-```cpp
-KeyAuthApp.log("user logged in"); // send event to logs. if you set discord webhook in app settings, it will send there instead of dashboard
-```
-
-## **Ban the user**
-
-Ban the user and blacklist their HWID and IP Address. Good function to call upon if you use anti-debug and have detected an intrusion attempt.
-
-Function only works after login.
-
-```cpp
-KeyAuthApp.ban();
-```
-
-## **Ban the user (with reason)**
-
-Ban the user and blacklist their HWID and IP Address. Good function to call upon if you use anti-debug and have detected an intrusion attempt.
-
-Function only works after login.
-
-The reason paramater will be the ban reason displayed to the user if they try to login, and visible on the KeyAuth dashboard.
-
-```cpp
-KeyAuthApp.ban("You have been banned because of reason..");
-```
-
-## **Server-sided webhooks**
-
-Tutorial video https://www.youtube.com/watch?v=ENRaNPPYJbc
-
-> [!NOTE]
-> Read documentation for KeyAuth webhooks here https://keyauth.readme.io/reference/webhooks-1
-
-Send HTTP requests to URLs securely without leaking the URL in your application. You should definitely use if you want to send requests to SellerAPI from your application, otherwise if you don't use you'll be leaking your seller key to everyone. And then someone can mess up your application.
-
-```cpp
-std::string resp = KeyAuthApp.webhook("Sh1j25S5iX", "&mak=best&debug=1");
-if (!KeyAuthApp.response.success) // check whether webhook request sent correctly
-{
-	std::cout << skCrypt("\n\n Status: ") << KeyAuthApp.response.message;
-	Sleep(1500);
-	exit(0);
-}
-std::cout << "\n Response recieved from webhook request: " + resp;
-```
-
-## **Download file**
-
-> [!NOTE]
-> Read documentation for KeyAuth files here https://docs.keyauth.cc/website/dashboard/files
-
-Keep files secure by providing KeyAuth your file download link on the KeyAuth dashboard. Make sure this is a direct download link (as soon as you go to the link, it starts downloading without you clicking anything). The KeyAuth download function provides the bytes, and then you get to decide what to do with those. This example shows how to write it to a file named `text.txt` in the same folder as the program, though you could execute with RunPE or whatever you want.
-
-`362906` is the file ID you get from the dashboard after adding file.
-
-```cpp
-// remember, certain paths like windows folder will require you to turn on auto run as admin https://stackoverflow.com/a/19617989
-std::vector<std::uint8_t> bytes = KeyAuthApp.download("362906");
-if (!KeyAuthApp.response.success) // check whether file downloaded correctly
-{
-	std::cout << skCrypt("\n\n Status: ") << KeyAuthApp.response.message;
-	Sleep(1500);
-	exit(0);
-}
-std::ofstream file("file.dll", std::ios_base::out | std::ios_base::binary);
-file.write((char*)bytes.data(), bytes.size());
-file.close();
-```
-
-## **Chat channels**
-
-Allow users to communicate amongst themselves in your program.
-
-```cpp
-KeyAuthApp.chatget("test");
-for (int i = 0; i < KeyAuthApp.response.channeldata.size(); i++)
-{
-	std::cout << "\n Author:" + KeyAuthApp.user_data.channeldata[i].author + " | Message:" + KeyAuthApp.user_data.channeldata[i].message + " | Send Time:" + tm_to_readable_time(timet_to_tm(string_to_timet(KeyAuthApp.user_data.channeldata[i].timestamp)));
-}
-```
-
-```cpp
-std::cout << skCrypt("\n Type Chat message: ");
-std::string message;
-std::getline(std::cin, message);
-if (!KeyAuthApp.chatsend("test", message))
-{
-	std::cout << KeyAuthApp.response.message << std::endl;
-}
-```
-
-Here's an ImGui example https://github.com/KeyAuth-Archive/KeyAuth-Chat-ImGui-CPP
-
-## **Changing username**
-
-Allow users to change their username when logged-in.
-
-```cpp
-std::cout << skCrypt("\n Change Username To: ");
-std::string newusername;
-std::cin >> newusername;
-KeyAuthApp.changeusername(newusername);
-if (KeyAuthApp.response.success) 
-{
-        std::cout << KeyAuthApp.response.message << std::endl;
-}
-```
-
-## SDK Dependencies
-This repo does not include the KeyAuth C++ SDK binaries/headers. Populate the following folders from the KeyAuth 1.3 SDK repo:
-- `x64/lib/`
-- `x86/lib/`
-
-You can copy the `lib/` folder contents from `keyauth-cpp-library-1.3API` into each architecture folder.
+KeyAuth is licensed under **Elastic License 2.0**.  
+Do not remove or bypass license verification functionality.
