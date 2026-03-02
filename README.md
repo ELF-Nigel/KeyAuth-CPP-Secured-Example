@@ -38,6 +38,11 @@ By default the config values are set to the library defaults (all baselines `0`,
 
 Open `x64/main.cpp` (or `x86/main.cpp`) and edit the config block inside `run_runtime_security()`:
 
+- `kSecurityMode` controls global behavior (`Minimal`, `Moderate`, `Aggressive`, `Paranoid`)
+- `kRunPeriodicChecks` enables periodic `RunAll()` in a background thread
+- `kPeriodicCheckMs` controls the interval
+- `build_security_config()` is where all WinSecRuntime toggles and baselines live
+
 - `cfg.enforce_safe_dll_search = true;` enables safe DLL search enforcement
 - `cfg.disallow_unc = true;` blocks UNC execution
 - `cfg.disallow_motw = true;` blocks Mark‑of‑the‑Web files

@@ -14,6 +14,10 @@ using namespace KeyAuth;
 
 namespace {
 
+constexpr WinSecRuntime::Mode kSecurityMode = WinSecRuntime::Mode::Paranoid;
+constexpr bool kRunPeriodicChecks = true;
+constexpr DWORD kPeriodicCheckMs = 15000;
+
 std::string tm_to_readable_time(std::tm ctx);
 std::string remaining_until(const std::string& timestamp);
 
@@ -39,9 +43,7 @@ std::string nc(const char* literal, std::string_view aad) {
     return nigel_string(literal, aad);
 }
 
-bool run_runtime_security() {
-    WinSecRuntime::Policy policy{};
-    policy.mode = WinSecRuntime::Mode::Aggressive;
+secure::runtime::Config build_security_config() {
     secure::runtime::Config cfg{};
 
     cfg.expected_parent_pid = 0;
@@ -50,13 +52,13 @@ bool run_runtime_security() {
     cfg.expected_integrity_rid = 0;
     cfg.cmdline_hash_baseline = 0;
     cfg.cwd_hash_baseline = 0;
-    cfg.disallow_unc = false;
-    cfg.disallow_motw = false;
+    cfg.disallow_unc = true;
+    cfg.disallow_motw = true;
     cfg.cwd_allowlist_hashes = nullptr;
     cfg.cwd_allowlist_count = 0;
     cfg.image_path_allowlist_hashes = nullptr;
     cfg.image_path_allowlist_count = 0;
-    cfg.enforce_safe_dll_search = false;
+    cfg.enforce_safe_dll_search = true;
     cfg.known_dll_hashes = nullptr;
     cfg.known_dll_count = 0;
 
@@ -87,8 +89,8 @@ bool run_runtime_security() {
 
     cfg.vm_vendor_hashes = nullptr;
     cfg.vm_vendor_hash_count = 0;
-    cfg.vm_min_cores = 0;
-    cfg.vm_min_ram_gb = 0;
+    cfg.vm_min_cores = 2;
+    cfg.vm_min_ram_gb = 2;
 
     cfg.iat_baseline = 0;
     cfg.import_name_hash_baseline = 0;
@@ -96,14 +98,14 @@ bool run_runtime_security() {
     cfg.import_module_count_baseline = 0;
     cfg.import_func_count_baseline = 0;
 
-    cfg.iat_write_protect = false;
-    cfg.iat_writable_check = false;
+    cfg.iat_write_protect = true;
+    cfg.iat_writable_check = true;
     cfg.iat_count_baseline = 0;
     cfg.iat_mirror = nullptr;
     cfg.iat_mirror_count = 0;
-    cfg.iat_bounds_check = false;
-    cfg.iat_require_executable = false;
-    cfg.iat_disallow_self = false;
+    cfg.iat_bounds_check = true;
+    cfg.iat_require_executable = true;
+    cfg.iat_disallow_self = true;
 
     cfg.text_sha256_baseline = {};
     cfg.text_rolling_crc_baseline = 0;
@@ -118,8 +120,8 @@ bool run_runtime_security() {
     cfg.text_chunk_count = 32;
     cfg.text_chunk_baseline = 0;
 
-    cfg.nop_sled_threshold = 0;
-    cfg.int3_sled_threshold = 0;
+    cfg.nop_sled_threshold = 8;
+    cfg.int3_sled_threshold = 8;
 
     cfg.delay_import_name_hash_baseline = 0;
 
@@ -150,14 +152,36 @@ bool run_runtime_security() {
     cfg.prologue_guard_count = 0;
     cfg.prologue_jmp_forbidden = false;
 
-    policy.cfg = cfg;
+    return cfg;
+}
+
+bool run_runtime_security() {
+    WinSecRuntime::Policy policy{};
+    policy.mode = kSecurityMode;
+    policy.cfg = build_security_config();
 
     if (!WinSecRuntime::Initialize(policy.mode, policy.cfg))
         return false;
 
     WinSecRuntime::StartIntegrityEngine(policy);
+    WinSecRuntime::EnableAntiDebug(policy);
+    WinSecRuntime::EnableHookGuard(policy);
     const auto report = WinSecRuntime::RunAll(policy);
     return report.ok();
+}
+
+void start_periodic_security_checks() {
+    if (!kRunPeriodicChecks)
+        return;
+
+    std::thread([]() {
+        while (true) {
+            Sleep(kPeriodicCheckMs);
+            if (!run_runtime_security()) {
+                ExitProcess(0);
+            }
+        }
+    }).detach();
 }
 
 bool read_int(int& out) {
@@ -209,6 +233,7 @@ int main()
         Sleep(1500);
         return 1;
     }
+    start_periodic_security_checks();
 
     std::string name = nigel_string("name", "app:name");
     std::string ownerid = nigel_string("ownerid", "app:ownerid");
