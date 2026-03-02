@@ -1,5 +1,7 @@
 #include <Windows.h>
 #include "lib/auth.hpp"
+#include "lib/WinSecRuntime/WinSecRuntime.h"
+#include "lib/nigelcrypt/nigelcrypt.hpp"
 #include "skStr.h"
 #include "lib/utils.hpp"
 #include <chrono>
@@ -7,6 +9,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <string_view>
 
 using namespace KeyAuth;
 
@@ -14,6 +17,36 @@ namespace {
 
 std::string tm_to_readable_time(std::tm ctx);
 std::string remaining_until(const std::string& timestamp);
+
+void wipe_string(std::string& value) {
+    if (value.empty())
+        return;
+    SecureZeroMemory(value.data(), value.size());
+    value.clear();
+    value.shrink_to_fit();
+}
+
+std::string nigel_string(const char* literal, std::string_view aad) {
+    try {
+        nigelcrypt::SecureString s(literal, aad);
+        auto view = s.decrypt(aad, nigelcrypt::hardened_decrypt_options());
+        return std::string(view.c_str(), view.size());
+    } catch (...) {
+        return std::string(literal);
+    }
+}
+
+bool run_runtime_security() {
+    WinSecRuntime::Policy policy{};
+    policy.mode = WinSecRuntime::Mode::Aggressive;
+
+    if (!WinSecRuntime::Initialize(policy.mode, policy.cfg))
+        return false;
+
+    WinSecRuntime::StartIntegrityEngine(policy);
+    const auto report = WinSecRuntime::RunAll(policy);
+    return report.ok();
+}
 
 bool read_int(int& out) {
     std::cin >> out;
@@ -49,35 +82,53 @@ void print_user_data(const api& app) {
 const std::string compilation_date = (std::string)skCrypt(__DATE__);
 const std::string compilation_time = (std::string)skCrypt(__TIME__);
 
-std::string name = skCrypt("name").decrypt();
-std::string ownerid = skCrypt("ownerid").decrypt();
-std::string version = skCrypt("1.0").decrypt();
-std::string url = skCrypt("https://keyauth.win/api/1.3/").decrypt(); // change if you're self-hosting
-std::string path = skCrypt("").decrypt(); // optional, set a path if you're using the token validation setting
-
-api KeyAuthApp(name, ownerid, version, url, path);
+static api* g_app = nullptr;
 api::lockout_state login_guard{};
 
 int main()
 {
+    nigelcrypt::set_policy(nigelcrypt::hardened_policy());
+    nigelcrypt::StrictMode strict{};
+    strict.enabled = true;
+    nigelcrypt::set_strict_mode(strict);
+
+    if (!run_runtime_security()) {
+        std::cout << skCrypt("\n\n Security checks failed.");
+        Sleep(1500);
+        return 1;
+    }
+
+    std::string name = nigel_string("name", "app:name");
+    std::string ownerid = nigel_string("ownerid", "app:ownerid");
+    std::string version = nigel_string("1.0", "app:version");
+    std::string url = nigel_string("https://keyauth.win/api/1.3/", "app:url"); // change if you're self-hosting
+    std::string path = nigel_string("", "app:path"); // optional, set a path if you're using the token validation setting
+
+    api app_instance(name, ownerid, version, url, path);
+    g_app = &app_instance;
+
     std::string consoleTitle = skCrypt("Loader - Built at:  ").decrypt() + compilation_date + " " + compilation_time;
     SetConsoleTitleA(consoleTitle.c_str());
     std::cout << skCrypt("\n\n Connecting..");
 
-    KeyAuthApp.init();
-    if (!KeyAuthApp.response.success)
+    app_instance.init();
+    if (!app_instance.response.success)
     {
-        std::cout << skCrypt("\n Status: ") << KeyAuthApp.response.message;
-        KeyAuthApp.init_fail_delay();
+        std::cout << skCrypt("\n Status: ") << app_instance.response.message;
+        app_instance.init_fail_delay();
         exit(1);
     }
 
-    name.clear(); ownerid.clear(); version.clear(); url.clear(); // reduce exposure in memory. -nigel
+    wipe_string(name);
+    wipe_string(ownerid);
+    wipe_string(version);
+    wipe_string(url);
+    wipe_string(path);
 
     if (api::lockout_active(login_guard)) {
         std::cout << skCrypt("\n Status: Too many attempts. Try again in ")
                   << api::lockout_remaining_ms(login_guard) << skCrypt(" ms.");
-        KeyAuthApp.close_delay();
+        app_instance.close_delay();
         return 0;
     }
 
@@ -91,7 +142,7 @@ int main()
     if (!read_int(option))
     {
         std::cout << skCrypt("\n\n Status: Failure: Invalid Selection");
-        KeyAuthApp.bad_input_delay();
+        app_instance.bad_input_delay();
         exit(1);
     }
 
@@ -102,7 +153,7 @@ int main()
         std::cin >> username;
         std::cout << skCrypt("\n Enter password: ");
         std::cin >> password;
-        KeyAuthApp.login(username, password);
+        app_instance.login(username, password);
         break;
     case 2:
         std::cout << skCrypt("\n\n Enter username: ");
@@ -111,39 +162,39 @@ int main()
         std::cin >> password;
         std::cout << skCrypt("\n Enter license: ");
         std::cin >> key;
-        KeyAuthApp.regstr(username, password, key);
+        app_instance.regstr(username, password, key);
         break;
     case 3:
         std::cout << skCrypt("\n\n Enter username: ");
         std::cin >> username;
         std::cout << skCrypt("\n Enter license: ");
         std::cin >> key;
-        KeyAuthApp.upgrade(username, key);
+        app_instance.upgrade(username, key);
         break;
     case 4:
         std::cout << skCrypt("\n Enter license: ");
         std::cin >> key;
-        KeyAuthApp.license(key);
+        app_instance.license(key);
         break;
     default:
         std::cout << skCrypt("\n\n Status: Failure: Invalid Selection");
-        KeyAuthApp.bad_input_delay();
+        app_instance.bad_input_delay();
         exit(1);
     }
 
-    if (!KeyAuthApp.response.success)
+    if (!app_instance.response.success)
     {
-        std::cout << skCrypt("\n Status: ") << KeyAuthApp.response.message;
+        std::cout << skCrypt("\n Status: ") << app_instance.response.message;
         api::record_login_fail(login_guard);
-        KeyAuthApp.init_fail_delay();
+        app_instance.init_fail_delay();
         exit(1);
     }
     api::reset_lockout(login_guard);
 
-    print_user_data(KeyAuthApp);
+    print_user_data(app_instance);
 
     std::cout << skCrypt("\n\n Closing in five seconds...");
-    KeyAuthApp.close_delay();
+    app_instance.close_delay();
 
     return 0;
 }

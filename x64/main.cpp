@@ -2,6 +2,8 @@
 #include "lib/auth.hpp"
 #include "lib/utils.hpp"
 #include "auth_guard.hpp"
+#include "lib/WinSecRuntime/WinSecRuntime.h"
+#include "lib/nigelcrypt/nigelcrypt.hpp"
 #include "skStr.h"
 #include "storage.hpp"
 #include <chrono>
@@ -10,6 +12,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <thread>
 #undef max
 
@@ -20,6 +23,35 @@ std::string remaining_until(const std::string& timestamp);
 
 namespace {
 
+void wipe_string(std::string& value) {
+    if (value.empty())
+        return;
+    SecureZeroMemory(value.data(), value.size());
+    value.clear();
+    value.shrink_to_fit();
+}
+
+std::string nigel_string(const char* literal, std::string_view aad) {
+    try {
+        nigelcrypt::SecureString s(literal, aad);
+        auto view = s.decrypt(aad, nigelcrypt::hardened_decrypt_options());
+        return std::string(view.c_str(), view.size());
+    } catch (...) {
+        return std::string(literal);
+    }
+}
+
+bool run_runtime_security() {
+    WinSecRuntime::Policy policy{};
+    policy.mode = WinSecRuntime::Mode::Aggressive;
+
+    if (!WinSecRuntime::Initialize(policy.mode, policy.cfg))
+        return false;
+
+    WinSecRuntime::StartIntegrityEngine(policy);
+    const auto report = WinSecRuntime::RunAll(policy);
+    return report.ok();
+}
 
 
 
@@ -107,38 +139,56 @@ const std::string compilation_date = (std::string)skCrypt(__DATE__);
 const std::string compilation_time = (std::string)skCrypt(__TIME__);
 void sessionStatus();
 
-// copy and paste from https://keyauth.cc/app/ and replace these string variables
-// Please watch tutorial HERE https://www.youtube.com/watch?v=5x4YkTmFH-U
-std::string name = skCrypt("name").decrypt(); // App name
-std::string ownerid = skCrypt("ownerid").decrypt(); // Account ID
-std::string version = skCrypt("1.0").decrypt(); // Application version. Used for automatic downloads see video here https://www.youtube.com/watch?v=kW195PLCBKs
-std::string url = skCrypt("https://keyauth.win/api/1.3/").decrypt(); // change if using KeyAuth custom domains feature
-std::string path = skCrypt("").decrypt(); // (OPTIONAL) see tutorial here https://www.youtube.com/watch?v=I9rxt821gMk&t=1s
-
-api KeyAuthApp(name, ownerid, version, url, path);
+static api* g_app = nullptr;
 api::lockout_state login_guard{};
 
 int main()
 {
+    nigelcrypt::set_policy(nigelcrypt::hardened_policy());
+    nigelcrypt::StrictMode strict{};
+    strict.enabled = true;
+    nigelcrypt::set_strict_mode(strict);
+
+    if (!run_runtime_security()) {
+        std::cout << skCrypt("\n\n Security checks failed.");
+        Sleep(1500);
+        return 1;
+    }
+
+    // copy and paste from https://keyauth.cc/app/ and replace these string variables
+    // Please watch tutorial HERE https://www.youtube.com/watch?v=5x4YkTmFH-U
+    std::string name = nigel_string("name", "app:name"); // App name
+    std::string ownerid = nigel_string("ownerid", "app:ownerid"); // Account ID
+    std::string version = nigel_string("1.0", "app:version"); // Application version. Used for automatic downloads see video here https://www.youtube.com/watch?v=kW195PLCBKs
+    std::string url = nigel_string("https://keyauth.win/api/1.3/", "app:url"); // change if using KeyAuth custom domains feature
+    std::string path = nigel_string("", "app:path"); // (OPTIONAL) see tutorial here https://www.youtube.com/watch?v=I9rxt821gMk&t=1s
+
+    api app_instance(name, ownerid, version, url, path);
+    g_app = &app_instance;
+
     std::string consoleTitle = skCrypt("Loader - Built at:  ").decrypt() + compilation_date + " " + compilation_time;
     SetConsoleTitleA(consoleTitle.c_str());
     std::cout << skCrypt("\n\n Connecting..");
 
-    KeyAuthApp.init();
-    if (!KeyAuthApp.response.success)
+    app_instance.init();
+    if (!app_instance.response.success)
     {
-        std::cout << skCrypt("\n Status: ") << KeyAuthApp.response.message;
-        KeyAuthApp.init_fail_delay();
+        std::cout << skCrypt("\n Status: ") << app_instance.response.message;
+        app_instance.init_fail_delay();
         exit(1);
     }
 
     const std::string ownerid_copy = ownerid; // preserve for auth check thread. -nigel
-    name.clear(); ownerid.clear(); version.clear(); url.clear(); path.clear();
+    wipe_string(name);
+    wipe_string(ownerid);
+    wipe_string(version);
+    wipe_string(url);
+    wipe_string(path);
 
     if (api::lockout_active(login_guard)) {
         std::cout << skCrypt("\n Status: Too many attempts. Try again in ")
                   << api::lockout_remaining_ms(login_guard) << skCrypt(" ms.");
-        KeyAuthApp.close_delay();
+        app_instance.close_delay();
         return 0;
     }
 
@@ -147,7 +197,7 @@ int main()
     std::string key;
     std::string TfaCode;
 
-    const bool used_saved_creds = try_auto_login(KeyAuthApp, username, password, key);
+    const bool used_saved_creds = try_auto_login(app_instance, username, password, key);
 
     if (!used_saved_creds)
     {
@@ -157,7 +207,7 @@ int main()
         if (!read_int(option))
         {
             std::cout << skCrypt("\n\n Status: Failure: Invalid Selection");
-            KeyAuthApp.bad_input_delay();
+            app_instance.bad_input_delay();
             exit(1);
         }
 
@@ -168,7 +218,7 @@ int main()
             std::cin >> username;
             std::cout << skCrypt("\n Enter password: ");
             std::cin >> password;
-            KeyAuthApp.login(username, password, "");
+            app_instance.login(username, password, "");
             break;
         case 2:
             std::cout << skCrypt("\n\n Enter username: ");
@@ -177,59 +227,59 @@ int main()
             std::cin >> password;
             std::cout << skCrypt("\n Enter license: ");
             std::cin >> key;
-            KeyAuthApp.regstr(username, password, key);
+            app_instance.regstr(username, password, key);
             break;
         case 3:
             std::cout << skCrypt("\n\n Enter username: ");
             std::cin >> username;
             std::cout << skCrypt("\n Enter license: ");
             std::cin >> key;
-            KeyAuthApp.upgrade(username, key);
+            app_instance.upgrade(username, key);
             break;
         case 4:
             std::cout << skCrypt("\n Enter license: ");
             std::cin >> key;
-            KeyAuthApp.license(key, "");
+            app_instance.license(key, "");
             break;
         default:
             std::cout << skCrypt("\n\n Status: Failure: Invalid Selection");
-            KeyAuthApp.bad_input_delay();
+            app_instance.bad_input_delay();
             exit(1);
         }
     }
 
-    if (KeyAuthApp.response.message.empty())
+    if (app_instance.response.message.empty())
         exit(11);
 
-    if (!KeyAuthApp.response.success)
+    if (!app_instance.response.success)
     {
-        if (KeyAuthApp.response.message == "2FA code required.") {
+        if (app_instance.response.message == "2FA code required.") {
             if (username.empty() || password.empty()) {
                 std::cout << skCrypt("\n Your account has 2FA enabled, please enter 6-digit code:");
                 std::cin >> TfaCode;
-                KeyAuthApp.license(key, TfaCode);
+                app_instance.license(key, TfaCode);
             }
             else {
                 std::cout << skCrypt("\n Your account has 2FA enabled, please enter 6-digit code:");
                 std::cin >> TfaCode;
-                KeyAuthApp.login(username, password, TfaCode);
+                app_instance.login(username, password, TfaCode);
             }
 
-            if (KeyAuthApp.response.message.empty())
+            if (app_instance.response.message.empty())
                 exit(11);
-            if (!KeyAuthApp.response.success) {
-                std::cout << skCrypt("\n Status: ") << KeyAuthApp.response.message;
+            if (!app_instance.response.success) {
+                std::cout << skCrypt("\n Status: ") << app_instance.response.message;
                 std::remove(api::kSavePath);
                 api::record_login_fail(login_guard);
-                KeyAuthApp.init_fail_delay();
+                app_instance.init_fail_delay();
                 exit(1);
             }
         }
         else {
-            std::cout << skCrypt("\n Status: ") << KeyAuthApp.response.message;
+            std::cout << skCrypt("\n Status: ") << app_instance.response.message;
             std::remove(api::kSavePath);
             api::record_login_fail(login_guard);
-            KeyAuthApp.init_fail_delay();
+            app_instance.init_fail_delay();
             exit(1);
         }
     }
@@ -260,29 +310,32 @@ int main()
     //disbale 2FA
     // KeyAuthApp.disable2fa();
 
-    if (KeyAuthApp.user_data.username.empty())
+    if (app_instance.user_data.username.empty())
         exit(10);
 
-    print_user_data(KeyAuthApp);
+    print_user_data(app_instance);
 
-    std::cout << skCrypt("\n\n Status: ") << KeyAuthApp.response.message;
+    std::cout << skCrypt("\n\n Status: ") << app_instance.response.message;
     std::cout << skCrypt("\n\n Closing in five seconds...");
-    KeyAuthApp.close_delay();
+    app_instance.close_delay();
 
     return 0;
 }
 
 void sessionStatus() {
-    KeyAuthApp.check(true); // do NOT specify true usually, it is slower and will get you blocked from API
-    if (!KeyAuthApp.response.success) {
+    if (!g_app)
+        return;
+
+    g_app->check(true); // do NOT specify true usually, it is slower and will get you blocked from API
+    if (!g_app->response.success) {
         return; // allow clean exit from thread. -nigel
     }
 
-    if (KeyAuthApp.response.isPaid) {
+    if (g_app->response.isPaid) {
         while (true) {
             Sleep(20000); // this MUST be included or else you get blocked from API
-            KeyAuthApp.check();
-            if (!KeyAuthApp.response.success) {
+            g_app->check();
+            if (!g_app->response.success) {
                 return; // allow clean exit from thread. -nigel
             }
         }
