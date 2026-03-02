@@ -22,6 +22,58 @@ However, we do **NOT** provide support for adding KeyAuth to your project. If yo
 
 While our API ensures licenses validation, it's crucial to implement robust client-side protection like obfuscation and integrity checks to prevent software tampering, as vulnerabilities often stem from insufficient client security.
 
+## **Secured example security**
+
+This secured example ships with:
+- **WinSecRuntime**: runtime integrity checks and anti‑tamper signals
+- **NigelCrypt**: runtime string protection for sensitive literals
+
+### **WinSecRuntime setup**
+
+The example calls `run_runtime_security()` at startup (see `x64/main.cpp` and `x86/main.cpp`). It builds a `secure::runtime::Config cfg` and passes it into `WinSecRuntime::Initialize()` and `WinSecRuntime::RunAll()`.
+
+By default the config values are set to the library defaults (all baselines `0`, allowlists `nullptr`, toggles `false`). This makes the checks **available** but **not enforced** until you set baselines or enable flags.
+
+#### Enable or tune checks
+
+Open `x64/main.cpp` (or `x86/main.cpp`) and edit the config block inside `run_runtime_security()`:
+
+- `cfg.enforce_safe_dll_search = true;` enables safe DLL search enforcement
+- `cfg.disallow_unc = true;` blocks UNC execution
+- `cfg.disallow_motw = true;` blocks Mark‑of‑the‑Web files
+- `cfg.module_hashes` / `cfg.module_hash_count` lets you pin known module hashes
+- `cfg.iat_*` lets you harden the import table checks
+- `cfg.text_*` enables code section integrity checks (sha256/rolling crc/chunk)
+- `cfg.nop_sled_threshold` / `cfg.int3_sled_threshold` enables sled detection
+- `cfg.vm_min_cores` / `cfg.vm_min_ram_gb` can reduce VM abuse
+
+If you want the checks to **block on failure**, keep:
+```cpp
+const auto report = WinSecRuntime::RunAll(policy);
+return report.ok();
+```
+and return `false` on failure (the example exits early when `run_runtime_security()` fails).
+
+### **NigelCrypt string protection**
+
+The example replaces UI/status strings and app config strings with NigelCrypt.  
+See `nc()` and `nigel_string()` helpers in `x64/main.cpp` and `x86/main.cpp`.
+
+#### How to change or add protected strings
+
+```cpp
+std::string value = nc("My Text", "aad:label");
+```
+
+- the first argument is the plaintext string
+- the second argument is an AAD tag (any stable label you want)
+
+If you want to remove encryption for a string, replace `nc(...)` with a normal literal.
+
+#### Important note about literals
+
+NigelCrypt protects runtime storage. If you pass a literal directly, it still exists in the binary. For complete removal of plaintext literals, use the NigelCrypt packer to embed encrypted blobs.
+
 ## Copyright License
 
 KeyAuth is licensed under **Elastic License 2.0**
